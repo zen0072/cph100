@@ -15,22 +15,30 @@ from data_utils import EXCLUDE_FROM_FEATURES
 DEFAULT_MODEL = "openai/gpt-oss-20b"
 PRIVATE_COLUMNS = EXCLUDE_FROM_FEATURES | {"target", "age_group"}
 
+RISK_FIRST =  ["discharge_disposition_id", "time_in_hospital", "num_medications",
+    "number_diagnoses", "age"]
 
 def make_prompt(row: dict, format_name: str) -> str:
     """Build two example representations; students design the third."""
     if format_name not in {'structured', 'natural', 'alternative'}:
         raise ValueError('Unknown format')
-    if format_name == 'alternative':
-        raise NotImplementedError('Student TODO: design and justify a third prompt format')
+    #if format_name == 'alternative':
+        #raise NotImplementedError('Student TODO: design and justify a third prompt format')
+
 
     # Never provide the label, derived outcomes, or patient/encounter identifiers.
     fields = []
+
     for name, value in row.items():
         if name in PRIVATE_COLUMNS or name.startswith('Unnamed:'):
             continue
         if pd.isna(value):
             value = 'missing'
         fields.append((name, str(value)))
+    if format_name == 'alternative':
+        rank = {n: i for i, n in enumerate(RISK_FIRST)}
+        fields = sorted(fields, key=lambda kv: rank.get(kv[0], len(RISK_FIRST)))
+    
 
     instruction = (
         'Estimate the probability that this patient will be readmitted to a '
@@ -70,8 +78,9 @@ def cached_call(client, model, prompt, cache_path, max_retries=3):
     for attempt in range(max_retries):
         try:
             completion = client.chat.completions.create(
-                model=model, temperature=0, max_tokens=24,
-                messages=[{"role": "user", "content": prompt}])
+            model=model, temperature=0, max_tokens=1024,
+            reasoning_effort="low",
+            messages=[{"role": "user", "content": prompt}])
             response = completion.choices[0].message.content or ""
             with cache_path.open("a") as f:
                 f.write(json.dumps({"key": key, "model": model,

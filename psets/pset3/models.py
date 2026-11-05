@@ -2,6 +2,15 @@
 
 You may use scikit-learn. Do not fit transformations on validation/test data.
 """
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import ParameterGrid
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.preprocessing import FunctionTransformer
+from sklearn.metrics import roc_auc_score
+import pandas as pd
+
 
 
 def build_preprocessor(X_train):
@@ -33,8 +42,9 @@ def build_preprocessor(X_train):
     return ColumnTransformer(
         [("numeric", numeric_pipe, numeric),
          ("categorical", categorical_pipe, categorical)],
-        remainder="drop",
+        remainder="drop", sparse_threshold=0
     )
+
 
 
 def build_model(kind, X_train, params=None, seed=42):
@@ -48,9 +58,28 @@ def build_model(kind, X_train, params=None, seed=42):
       - Expose tunable hyperparameters via params.
       - Set random seeds where supported.
     """
-    if kind not in {'linear', 'tree', 'neural'}:
-        raise ValueError(f'Unknown model family: {kind}')
-    raise NotImplementedError(f'Student TODO: implement {kind} model')
+    _DEFAULTS = {
+    "linear": dict(C=1.0, penalty="l2", max_iter=2000),
+    "tree":   dict(learning_rate=0.1, max_depth=None, max_leaf_nodes=31,
+                   min_samples_leaf=20, l2_regularization=0.0, max_iter=200),
+    "neural": dict(hidden_layer_sizes=(64, 32), alpha=1e-3,
+                   learning_rate_init=1e-3, max_iter=300),
+}
+    p = {**_DEFAULTS[kind], **(params or {})}
+
+    steps = [("prep", build_preprocessor(X_train))]
+    if kind == "linear":
+        clf = LogisticRegression(random_state=seed, **p)
+    elif kind == "tree":
+        clf = HistGradientBoostingClassifier(random_state=seed, **p)
+    else:
+        clf = MLPClassifier(early_stopping=True, n_iter_no_change=10,
+                            random_state=seed, **p)
+        
+    steps.append(("clf", clf))
+    return Pipeline(steps)
+
+
 
 
 def tune_model(kind, train, val, seed=42):
@@ -59,4 +88,24 @@ def tune_model(kind, train, val, seed=42):
     TODO: Train candidate models, compute validation AUC, select a candidate,
     and record the search and results. Never select using the test set.
     """
-    raise NotImplementedError("Student TODO: hyperparameter search")
+    #raise NotImplementedError("Student TODO: hyperparameter search")
+    _GRIDS = {
+    "linear": {"C": [0.001, 0.01, 0.1, 1, 10]},
+    "tree": {"learning_rate": [0.05, 0.1], "max_leaf_nodes": [15, 31],
+             "min_samples_leaf": [20, 100], "l2_regularization": [0.0, 1.0]},
+    "neural": {"hidden_layer_sizes": [(32,), (64, 32)],
+               "alpha": [1e-4, 1e-2], "learning_rate_init": [1e-3, 3e-3]},
+}
+    X_tr, y_tr = train
+    X_va, y_va = val
+
+    rows = []
+    for params in ParameterGrid(_GRIDS[kind]):
+        model = build_model(kind, X_tr, params, seed).fit(X_tr, y_tr)
+        auc = roc_auc_score(y_va, model.predict_proba(X_va)[:, 1])
+        rows.append({"params": params, "val_auc": auc})
+
+    results = pd.DataFrame(rows).sort_values("val_auc", ascending=False).reset_index(drop=True)
+    best = results.loc[0, "params"]
+    final = build_model(kind, X_tr, best, seed).fit(X_tr, y_tr)
+    return final, best, results
